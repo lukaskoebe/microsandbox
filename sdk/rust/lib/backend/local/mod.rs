@@ -520,13 +520,13 @@ impl Backend for LocalBackend {
         BackendKind::Local
     }
 
-    fn info(&self) -> BackendInfo {
-        BackendInfo {
+    fn info(&self) -> crate::MicrosandboxResult<BackendInfo> {
+        Ok(BackendInfo {
             kind: BackendKind::Local,
             api_url: None,
             source: self.selection_source,
             profile: self.profile.clone(),
-        }
+        })
     }
 
     fn sandboxes(&self) -> &dyn SandboxBackend {
@@ -1731,6 +1731,38 @@ mod tests {
             .unwrap();
         assert_eq!(backend.config().sandbox_defaults.cpus, 3);
         assert!(backend.db.get().is_none());
+    }
+
+    #[test]
+    fn local_construction_enforces_policy_before_creating_home_or_database() {
+        let _env_guard = crate::test_support::lock_env();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("runtime");
+        let user = dir.path().join("config.json");
+        let managed = dir.path().join("managed.json");
+        for (ordinary, enforced) in [
+            (r#"{"allowed_backends":["cloud"]}"#, r#"{"overrides":{}}"#),
+            (
+                r#"{"allowed_backends":["local"]}"#,
+                r#"{"overrides":{"allowed_backends":["cloud"]}}"#,
+            ),
+            (r#"{"allowed_backends":[]}"#, r#"{"overrides":{}}"#),
+        ] {
+            std::fs::write(&user, ordinary).unwrap();
+            std::fs::write(&managed, enforced).unwrap();
+            let error = LocalBackend::builder()
+                .config_path(&user)
+                .managed_config_path(&managed)
+                .home(&home)
+                .build_lazy()
+                .err()
+                .unwrap();
+            assert!(
+                error.to_string().contains("allowed_backends")
+                    || error.to_string().contains("allowed backends")
+            );
+            assert!(!home.exists());
+        }
     }
 
     #[test]
