@@ -1645,7 +1645,7 @@ Stop the sandbox after this much wall-clock time without exec activity. Zero mea
 func WithRegistryAuth(auth RegistryAuth) SandboxOption
 ```
 
-Set credentials for pulling from a private OCI registry. See [`RegistryAuth`](#registryauth).
+Set credentials for pulling from a private OCI registry. See [`RegistryAuth`](#registryauth). Explicit auth replaces the credentials microsandbox would otherwise look up in the OS keyring, the registry configuration and Docker's credential store; pass `RegistryAuth{Anonymous: true}` to pull a public image without any, even when stale credentials for its registry are stored on the host.
 
 <p className="msb-label">Parameters</p>
 
@@ -3262,6 +3262,7 @@ Credentials for a private OCI registry.
 |-------|------|-------------|
 | Username | `string` | Registry username |
 | Password | `string` | Registry password |
+| Anonymous | `bool` | Pull without credentials; `Username` and `Password` are ignored |
 
 ### InitConfig
 

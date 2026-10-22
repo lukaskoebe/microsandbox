@@ -923,6 +923,14 @@ func TestWithRegistryAuth(t *testing.T) {
 	}
 }
 
+func TestWithRegistryAuthAnonymous(t *testing.T) {
+	o := SandboxConfig{}
+	WithRegistryAuth(RegistryAuth{Anonymous: true})(&o)
+	if o.RegistryAuth == nil || !o.RegistryAuth.Anonymous {
+		t.Errorf("RegistryAuth: got %+v", o.RegistryAuth)
+	}
+}
+
 func TestWithRegistryInsecure(t *testing.T) {
 	o := SandboxConfig{}
 	WithRegistryInsecure()(&o)
