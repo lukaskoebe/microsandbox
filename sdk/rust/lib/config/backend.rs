@@ -81,18 +81,20 @@ impl BackendSelection {
         let backend = std::env::var("MSB_BACKEND").ok();
         let profile = std::env::var("MSB_PROFILE").ok();
         let api_key = std::env::var("MSB_API_KEY").ok();
-        let (selection, source, config) =
-            Self::resolve_from(managed, backend, profile, api_key.as_deref(), || {
-                GlobalConfigPatch::load_from(user_path)
-            })?;
-        Ok((
-            selection,
-            source,
-            config.with_source_files(user_path, managed_path)?,
-        ))
+        Self::resolve_from(
+            user_path,
+            managed_path,
+            managed,
+            backend,
+            profile,
+            api_key.as_deref(),
+            || GlobalConfigPatch::load_from(user_path),
+        )
     }
 
     fn resolve_from(
+        user_path: &Path,
+        managed_path: Option<&Path>,
         managed: GlobalConfigPatch,
         backend: Option<String>,
         profile: Option<String>,
@@ -101,17 +103,29 @@ impl BackendSelection {
     ) -> MicrosandboxResult<(BackendSelection, BackendSelectionSource, BackendConfig)> {
         let global = load()?;
         let (selection, source) = Self::describe(&global, &managed, backend, profile, api_key)?;
-        let config = BackendConfig::new(global, managed);
-        config.require_backend(selection.kind(), Some(source))?;
-        selection.kind().require_available()?;
-        if matches!(selection, Self::Cloud { profile: None })
+        let config =
+            BackendConfig::new(global, managed).with_source_files(user_path, managed_path)?;
+        selection.validate(&config, source, api_key)?;
+        Ok((selection, source, config))
+    }
+
+    /// Check policy, build support, and ambient credentials without resolving profile secrets.
+    fn validate(
+        &self,
+        config: &BackendConfig,
+        source: BackendSelectionSource,
+        api_key: Option<&str>,
+    ) -> MicrosandboxResult<()> {
+        config.require_backend(self.kind(), Some(source))?;
+        self.kind().require_available()?;
+        if matches!(self, Self::Cloud { profile: None })
             && api_key.is_none_or(|key| key.trim().is_empty())
         {
             return Err(MicrosandboxError::InvalidConfig(
                 "MSB_BACKEND=cloud requires a non-empty MSB_API_KEY or a cloud profile".into(),
             ));
         }
-        Ok((selection, source, config))
+        Ok(())
     }
 
     /// Describe selection using captured inputs; never read a profile's credentials.
@@ -273,6 +287,8 @@ impl BackendContext {
         Self::from_configs(
             GlobalConfigPatch::load_from(user_path)?,
             ManagedConfig::load(managed_path)?.overrides,
+            user_path,
+            managed_path,
         )
     }
 
@@ -297,7 +313,7 @@ impl BackendContext {
         } else {
             user.clear_active_profile_mut();
         }
-        let context = Self::from_configs(user.clone(), managed)?;
+        let context = Self::from_configs(user.clone(), managed, user_path, managed_path)?;
         user.save_to(user_path)?;
         Ok(context)
     }
@@ -305,8 +321,11 @@ impl BackendContext {
     fn from_configs(
         user: GlobalConfigPatch,
         managed: GlobalConfigPatch,
+        user_path: &Path,
+        managed_path: Option<&Path>,
     ) -> MicrosandboxResult<Self> {
-        let config = BackendConfig::new(user.clone(), managed.clone());
+        let config = BackendConfig::new(user.clone(), managed.clone())
+            .with_source_files(user_path, managed_path)?;
         config.validate_backend_policy()?;
         let resolved = config.resolved_config();
         let mut profiles = resolved
@@ -337,9 +356,8 @@ impl BackendContext {
         let (selected, selection_error) = match selection {
             Ok((selection, source)) => {
                 let kind = selection.kind();
-                let error = config
-                    .require_backend(kind, Some(source))
-                    .and_then(|()| kind.require_available())
+                let error = selection
+                    .validate(&config, source, api_key.as_deref())
                     .err()
                     .map(|error| error.to_string());
                 let info = BackendInfo {
@@ -404,15 +422,24 @@ mod tests {
         )
         .unwrap();
         let managed = GlobalConfigPatch::new().allowed_backends(vec![BackendKind::Local]);
-        let error = BackendSelection::resolve_from(managed, None, None, None, || Ok(user))
-            .err()
-            .unwrap()
-            .to_string();
+        let error = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
+            managed,
+            None,
+            None,
+            None,
+            || Ok(user),
+        )
+        .err()
+        .unwrap()
+        .to_string();
         assert!(
             error.contains("cloud backend selected by active_profile is disabled"),
             "{error}"
         );
         assert!(error.contains("managed config"));
+        assert!(error.contains("managed.json"));
         assert!(!error.contains("keyring"));
     }
 
@@ -484,7 +511,11 @@ mod tests {
 
         std::fs::write(&managed, r#"{"overrides":{"allowed_backends":[]}}"#).unwrap();
         let before = std::fs::read(&user).unwrap();
-        assert!(BackendContext::load_from(&user, Some(&managed)).is_err());
+        let error = BackendContext::load_from(&user, Some(&managed))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("managed config"), "{error}");
+        assert!(error.contains(managed.to_str().unwrap()), "{error}");
         assert!(BackendContext::save_profile_preference(&user, Some(&managed), None).is_err());
         assert_eq!(std::fs::read(&user).unwrap(), before);
     }
@@ -493,6 +524,9 @@ mod tests {
     fn context_inspection_reports_invalid_selection_without_exposing_credentials() {
         let _lock = crate::test_support::lock_env();
         let _env = SelectionEnvironment::clear();
+        let dir = tempfile::tempdir().unwrap();
+        let user_path = dir.path().join("config.json");
+        let managed_path = dir.path().join("managed.json");
         let mut user: GlobalConfigPatch = serde_json::from_str(
             r#"{
             "active_profile":"missing",
@@ -505,7 +539,13 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let context = BackendContext::from_configs(user.clone(), Default::default()).unwrap();
+        let context = BackendContext::from_configs(
+            user.clone(),
+            Default::default(),
+            &user_path,
+            Some(&managed_path),
+        )
+        .unwrap();
         assert!(context.selected.is_none());
         assert!(context.selection_error.unwrap().contains("not found"));
         assert_eq!(
@@ -519,7 +559,13 @@ mod tests {
 
         for name in ["a", "b", "c", "d"] {
             user.active_profile_mut(name.to_owned());
-            let context = BackendContext::from_configs(user.clone(), Default::default()).unwrap();
+            let context = BackendContext::from_configs(
+                user.clone(),
+                Default::default(),
+                &user_path,
+                Some(&managed_path),
+            )
+            .unwrap();
             assert_eq!(
                 context.selected.as_ref().unwrap().profile.as_deref(),
                 Some(name)
@@ -533,9 +579,36 @@ mod tests {
 
         // An environment selector remains effective after saving a different preference.
         unsafe { std::env::set_var("MSB_BACKEND", "local") };
-        let context = BackendContext::from_configs(user, Default::default()).unwrap();
+        let context =
+            BackendContext::from_configs(user, Default::default(), &user_path, Some(&managed_path))
+                .unwrap();
         assert!(context.preference_overridden);
         assert_eq!(context.selected.unwrap().kind, BackendKind::Local);
+    }
+
+    #[test]
+    fn selection_rejects_backends_missing_from_this_build() {
+        for (kind, available) in [
+            ("local", cfg!(feature = "local")),
+            ("cloud", cfg!(feature = "cloud")),
+        ] {
+            let result = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
+                Default::default(),
+                Some(kind.into()),
+                None,
+                Some("test-key"),
+                || Ok(GlobalConfigPatch::new()),
+            );
+
+            if available {
+                assert_eq!(result.unwrap().0.kind().as_str(), kind);
+            } else {
+                let error = result.err().unwrap().to_string();
+                assert!(error.contains(&format!("the {kind} backend is not available")));
+            }
+        }
     }
 
     struct SelectionEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
@@ -566,6 +639,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn managed_clear_removes_profiles_without_suppressing_backend_errors() {
         for value in [
@@ -576,6 +650,8 @@ mod tests {
             let managed: GlobalConfigPatch =
                 serde_json::from_value(serde_json::json!({"active_profile":value})).unwrap();
             let (selection, source, _) = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
                 managed.clone(),
                 None,
                 Some("environment".into()),
@@ -590,6 +666,8 @@ mod tests {
             assert_eq!(source, BackendSelectionSource::ActiveProfile);
             assert!(
                 BackendSelection::resolve_from(
+                    Path::new("config.json"),
+                    Some(Path::new("managed.json")),
                     managed.clone(),
                     Some("invalid".into()),
                     None,
@@ -599,9 +677,15 @@ mod tests {
                 .is_err()
             );
             assert!(
-                BackendSelection::resolve_from(managed, Some("cloud".into()), None, None, || Ok(
-                    GlobalConfigPatch::new()
-                ))
+                BackendSelection::resolve_from(
+                    Path::new("config.json"),
+                    Some(Path::new("managed.json")),
+                    managed,
+                    Some("cloud".into()),
+                    None,
+                    None,
+                    || Ok(GlobalConfigPatch::new())
+                )
                 .is_err()
             );
         }
@@ -610,6 +694,8 @@ mod tests {
     #[test]
     fn explicit_local_reports_malformed_user_config() {
         let result = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
             Default::default(),
             Some("local".into()),
             None,
@@ -625,6 +711,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn managed_profile_overrides_invalid_environment_and_replaces_profile_entry() {
         let managed = serde_json::from_str(
@@ -634,6 +721,8 @@ mod tests {
         )
         .unwrap();
         let (selection, source, global) = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
             managed,
             Some("invalid".into()),
             Some("other".into()),
@@ -668,6 +757,8 @@ mod tests {
             let managed =
                 serde_json::from_value(serde_json::json!({"active_profile":value})).unwrap();
             let (selection, source, _) = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
                 managed,
                 Some("cloud".into()),
                 Some("other".into()),
@@ -683,6 +774,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn profile_selection_preserves_map_merge_and_replacement() {
         let additional: GlobalConfigPatch =
@@ -699,12 +791,20 @@ mod tests {
                 false,
             ),
         ] {
-            let result = BackendSelection::resolve_from(managed, None, None, None, || {
-                Ok(serde_json::from_str(
-                    r#"{"active_profile":"work","profiles":{"work":{"backend":"local"}}}"#,
-                )
-                .unwrap())
-            });
+            let result = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
+                managed,
+                None,
+                None,
+                None,
+                || {
+                    Ok(serde_json::from_str(
+                        r#"{"active_profile":"work","profiles":{"work":{"backend":"local"}}}"#,
+                    )
+                    .unwrap())
+                },
+            );
             if should_find_profile {
                 assert!(matches!(
                     result.unwrap().0,
@@ -726,6 +826,8 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut loads = 0;
         let (selection, source, layers) = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
             Default::default(),
             Some("local".into()),
             None,
@@ -751,11 +853,13 @@ mod tests {
         assert_eq!(backend.config().home(), home.path());
     }
 
-    #[cfg(feature = "cloud")]
+    #[cfg(all(feature = "local", feature = "cloud"))]
     #[test]
     fn ordinary_explicit_routing_and_profile_sources_are_preserved() {
         for (kind, key) in [("local", None), ("cloud", Some("key"))] {
             let (selection, source, _) = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
                 Default::default(),
                 Some(kind.into()),
                 None,
@@ -771,6 +875,8 @@ mod tests {
             assert_eq!(source, BackendSelectionSource::MsbBackend);
         }
         let (selection, source, _) = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
             Default::default(),
             None,
             Some(" env-profile ".into()),
@@ -797,6 +903,8 @@ mod tests {
         active_profile: Option<&str>,
     ) -> MicrosandboxResult<BackendSelection> {
         BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
             Default::default(),
             backend.map(str::to_owned),
             env_profile.map(str::to_owned),
@@ -819,6 +927,7 @@ mod tests {
         .map(|(selection, _, _)| selection)
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn credentials_alone_do_not_select_cloud() {
         assert!(matches!(
@@ -851,6 +960,7 @@ mod tests {
         assert!(err.to_string().contains("requires a non-empty MSB_API_KEY"));
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn explicit_local_wins_over_credentials_and_profiles() {
         assert!(matches!(
@@ -923,9 +1033,16 @@ mod tests {
             r#"{"profiles":{"work":{"backend":"cloud","api_key_ref":"env:MSB_TEST_MANAGED_PROFILE_KEY"}}}"#,
         )
         .unwrap();
-        let selection = BackendSelection::resolve_from(managed, None, None, None, || {
-            Ok(serde_json::from_str(
-                r#"{
+        let selection = BackendSelection::resolve_from(
+            Path::new("config.json"),
+            Some(Path::new("managed.json")),
+            managed,
+            None,
+            None,
+            None,
+            || {
+                Ok(serde_json::from_str(
+                    r#"{
                     "active_profile":"work",
                     "profiles":{"work":{
                         "backend":"cloud",
@@ -933,9 +1050,10 @@ mod tests {
                         "api_key_ref":"inline:   "
                     }}
                 }"#,
-            )
-            .unwrap())
-        });
+                )
+                .unwrap())
+            },
+        );
         let cloud = selection.map(|(selection, source, config)| match selection {
             BackendSelection::Cloud {
                 profile: Some(name),
@@ -964,6 +1082,8 @@ mod tests {
     fn selection_does_not_resolve_cloud_credentials() {
         for key_ref in [None, Some("inline:   ")] {
             let result = BackendSelection::resolve_from(
+                Path::new("config.json"),
+                Some(Path::new("managed.json")),
                 Default::default(),
                 None,
                 Some("work".into()),

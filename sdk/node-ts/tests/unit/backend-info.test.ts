@@ -9,6 +9,7 @@ import { defaultBackendInfo, defaultBackendKind } from "../../dist/index.js";
 
 describe("backend introspection", () => {
   it("reports prohibited selection through both diagnostics", () => {
+    // Requires an unmanaged host; subprocesses retain system policy. See DEVELOPMENT.md.
     const dir = mkdtempSync(join(tmpdir(), "msb-context-"));
     try {
       const config = join(dir, "config.json");

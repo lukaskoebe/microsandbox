@@ -106,6 +106,7 @@ impl BackendConfig {
 
     /// Prepare local settings once, then validate and cache the complete result.
     /// Cloud profile lookup does not prepare local runtime paths or validate local defaults.
+    /// Runtime lookup and diagnostics also use this; callers enforce backend permission separately.
     pub(crate) fn prepare_for_local_backend(
         mut self,
         mut builder: GlobalConfigPatch,
@@ -150,7 +151,7 @@ impl BackendConfig {
         resolved.validate_sandbox_defaults()?;
         resolved.validate_snapshots()?;
         self.resolved = OnceLock::from(Arc::new(resolved));
-        self.require_backend(BackendKind::Local, None)?;
+        self.validate_backend_policy()?;
 
         Ok(self)
     }
@@ -387,31 +388,6 @@ mod tests {
         assert!(
             serde_json::from_value::<GlobalConfigPatch>(json!({"allowed_backends":["typo"]}))
                 .is_err()
-        );
-    }
-
-    #[test]
-    fn local_preparation_checks_the_final_policy() {
-        let _env_guard = crate::test_support::lock_env();
-        let builder = GlobalConfigPatch::new().allowed_backends(vec![BackendKind::Cloud]);
-        let config = BackendConfig::new(Default::default(), Default::default());
-        let error = config
-            .prepare_for_local_backend(builder.clone())
-            .err()
-            .unwrap();
-        assert!(
-            error
-                .to_string()
-                .contains("local backend selected by programmatic is disabled")
-        );
-
-        let managed = GlobalConfigPatch::new().allowed_backends(vec![BackendKind::Local]);
-        let config = BackendConfig::new(Default::default(), managed)
-            .prepare_for_local_backend(builder)
-            .unwrap();
-        assert_eq!(
-            config.resolved_config().allowed_backends,
-            Some(vec![BackendKind::Local])
         );
     }
 

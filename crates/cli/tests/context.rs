@@ -1,4 +1,5 @@
 //! Context management must work without credentials, a backend connection, or a catalog.
+//! Run on an unmanaged host; subprocesses retain system policy. See DEVELOPMENT.md.
 
 use std::{
     path::Path,
@@ -126,6 +127,12 @@ fn prohibited_selection_is_visible_but_cannot_be_used() {
             .unwrap()
             .contains("disabled")
     );
+    assert!(
+        context["selection_error"]
+            .as_str()
+            .unwrap()
+            .contains(path.to_str().unwrap())
+    );
     assert_eq!(context["profiles"][0]["allowed"], false);
     for arguments in [vec!["context"], vec!["context", "use", "local"]] {
         let output = command(dir.path(), &arguments).output().unwrap();
@@ -133,6 +140,7 @@ fn prohibited_selection_is_visible_but_cannot_be_used() {
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("user config"), "{error}");
         assert!(error.contains("allowed backends: cloud"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
     }
     assert!(!dir.path().join("runtime").exists());
@@ -144,13 +152,10 @@ fn prohibited_selection_is_visible_but_cannot_be_used() {
     ] {
         std::fs::write(&path, invalid).unwrap();
         for arguments in [vec!["context", "list"], vec!["context", "reset"]] {
-            assert!(
-                !command(dir.path(), &arguments)
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
+            let output = command(dir.path(), &arguments).output().unwrap();
+            assert!(!output.status.success());
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains(path.to_str().unwrap()), "{error}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
         }
     }
@@ -164,6 +169,23 @@ fn cloud_context_uses_explicit_selection_without_contacting_the_endpoint() {
         r#"{"profiles":{"personal":{"backend":"local"}}}"#,
     )
     .unwrap();
+    for api_key in [None, Some(""), Some(" ")] {
+        let mut command = command(dir.path(), &["context", "list", "--format", "json"]);
+        command.env("MSB_BACKEND", "cloud");
+        if let Some(api_key) = api_key {
+            command.env("MSB_API_KEY", api_key);
+        }
+
+        let context = success_json(command.output().unwrap());
+        assert_eq!(context["selected"]["kind"], "cloud");
+        assert!(
+            context["selection_error"]
+                .as_str()
+                .unwrap()
+                .contains("requires a non-empty MSB_API_KEY or a cloud profile")
+        );
+    }
+
     let output = command(dir.path(), &["context", "--format", "json"])
         .env("MSB_BACKEND", "cloud")
         .env("MSB_API_KEY", "NEVER_PRINT_THIS")
@@ -189,5 +211,6 @@ fn cloud_context_uses_explicit_selection_without_contacting_the_endpoint() {
     assert_eq!(context["saved_profile"], "personal");
     assert_eq!(context["selected"]["kind"], "cloud");
     assert_eq!(context["preference_overridden"], true);
+    assert!(context["selection_error"].is_null());
     assert!(!dir.path().join("runtime").exists());
 }

@@ -19,6 +19,7 @@ def test_default_backend_info_is_structured_and_secret_safe() -> None:
 
 
 def test_backend_diagnostics_report_prohibited_selection(tmp_path: Path) -> None:
+    # Requires an unmanaged host; the subprocess retains system policy. See DEVELOPMENT.md.
     config = tmp_path / "config.json"
     config.write_text('{"allowed_backends":["cloud"]}')
     env = {key: value for key, value in os.environ.items() if not key.startswith("MSB_")}
