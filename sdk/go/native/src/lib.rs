@@ -1069,25 +1069,6 @@ struct RegistryAuthOpts {
     password: String,
 }
 
-/// The explicit registry auth a create request asks for, if any. Without it
-/// the SDK resolves ambient credentials (keyring, config, Docker).
-fn requested_registry_auth(
-    auth: Option<RegistryAuthOpts>,
-    anonymous: bool,
-) -> Result<Option<RegistryAuth>, FfiError> {
-    match (auth, anonymous) {
-        (Some(_), true) => Err(FfiError::invalid_argument(
-            "registry_anonymous and registry_auth are mutually exclusive",
-        )),
-        (Some(auth), false) => Ok(Some(RegistryAuth::Basic {
-            username: auth.username,
-            password: auth.password,
-        })),
-        (None, true) => Ok(Some(RegistryAuth::Anonymous)),
-        (None, false) => Ok(None),
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct RootDiskOpts {
     /// "managed" | "tmpfs" | "disk-image" | "flat".
@@ -1343,9 +1324,28 @@ enum FfiNamedMode {
     EnsureExists,
 }
 
-// ---------------------------------------------------------------------------
-// Sandbox create — helpers
-// ---------------------------------------------------------------------------
+//--------------------------------------------------------------------------------------------------
+// Functions: Helpers
+//--------------------------------------------------------------------------------------------------
+
+/// The explicit registry auth a create request asks for, if any. Without it
+/// the SDK resolves ambient credentials (keyring, config, Docker).
+fn requested_registry_auth(
+    auth: Option<RegistryAuthOpts>,
+    anonymous: bool,
+) -> Result<Option<RegistryAuth>, FfiError> {
+    match (auth, anonymous) {
+        (Some(_), true) => Err(FfiError::invalid_argument(
+            "registry_anonymous and registry_auth are mutually exclusive",
+        )),
+        (Some(auth), false) => Ok(Some(RegistryAuth::Basic {
+            username: auth.username,
+            password: auth.password,
+        })),
+        (None, true) => Ok(Some(RegistryAuth::Anonymous)),
+        (None, false) => Ok(None),
+    }
+}
 
 /// Parse the shared policy vocabulary without applying DNS, TLS, or bootstrap options.
 fn parse_custom_network_policy(
