@@ -923,11 +923,17 @@ func TestWithRegistryAuth(t *testing.T) {
 	}
 }
 
-func TestWithRegistryAuthAnonymous(t *testing.T) {
+func TestWithRegistryAnonymous(t *testing.T) {
 	o := SandboxConfig{}
-	WithRegistryAuth(RegistryAuth{Anonymous: true})(&o)
-	if o.RegistryAuth == nil || !o.RegistryAuth.Anonymous {
-		t.Errorf("RegistryAuth: got %+v", o.RegistryAuth)
+	WithRegistryAuth(RegistryAuth{Username: "u", Password: "p"})(&o)
+	WithRegistryAnonymous()(&o)
+	if !o.registryAnonymous || o.RegistryAuth != nil {
+		t.Errorf("anonymous registry selection: got %+v", o)
+	}
+
+	WithRegistryAuth(RegistryAuth{Username: "u", Password: "p"})(&o)
+	if o.registryAnonymous || o.RegistryAuth == nil {
+		t.Errorf("basic registry selection: got %+v", o)
 	}
 }
 

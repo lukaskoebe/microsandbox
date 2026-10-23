@@ -234,7 +234,7 @@ func buildFFICreateOptions(o SandboxConfig) ffi.CreateOptions {
 		}
 		ffiOpts.Init = init
 	}
-	if o.RegistryAuth != nil && o.RegistryAuth.Anonymous {
+	if o.registryAnonymous {
 		ffiOpts.RegistryAnonymous = true
 	} else if o.RegistryAuth != nil {
 		ffiOpts.RegistryAuth = &ffi.RegistryAuthOptions{

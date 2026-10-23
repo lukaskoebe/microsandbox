@@ -582,7 +582,8 @@ func TestFFIWireShape_RegistryAuth(t *testing.T) {
 func TestFFIWireShape_RegistryAnonymous(t *testing.T) {
 	got := marshalCreateOptions(t,
 		WithImage("ghcr.io/org/public"),
-		WithRegistryAuth(RegistryAuth{Anonymous: true, Username: "ignored", Password: "ignored"}),
+		WithRegistryAuth(RegistryAuth{Username: "old", Password: "old"}),
+		WithRegistryAnonymous(),
 	)
 	if got["registry_anonymous"] != true {
 		t.Fatalf("registry_anonymous = %v", got["registry_anonymous"])

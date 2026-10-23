@@ -60,6 +60,7 @@ type SandboxConfig struct {
 	MaxDuration        time.Duration
 	IdleTimeout        time.Duration
 	RegistryAuth       *RegistryAuth
+	registryAnonymous  bool
 	// RegistryInsecure pulls the image over plain HTTP instead of HTTPS.
 	RegistryInsecure bool
 	// RegistryCACerts holds PEM-encoded CA root certificates trusted when
@@ -904,14 +905,21 @@ func WithIdleTimeout(d time.Duration) SandboxOption {
 	return func(o *SandboxConfig) { o.IdleTimeout = d }
 }
 
-// WithRegistryAuth sets credentials for pulling private OCI images. Pass
-// RegistryAuth{Anonymous: true} to pull without credentials, even when the OS
-// keyring, the registry configuration or Docker's credential store has some for
-// the registry.
+// WithRegistryAuth sets credentials for pulling private OCI images.
 func WithRegistryAuth(auth RegistryAuth) SandboxOption {
 	return func(o *SandboxConfig) {
 		a := auth
 		o.RegistryAuth = &a
+		o.registryAnonymous = false
+	}
+}
+
+// WithRegistryAnonymous pulls without credentials, even when the OS keyring,
+// registry configuration or Docker's credential store has some for the registry.
+func WithRegistryAnonymous() SandboxOption {
+	return func(o *SandboxConfig) {
+		o.RegistryAuth = nil
+		o.registryAnonymous = true
 	}
 }
 
@@ -1097,11 +1105,6 @@ func (initFactory) Cmd(cmd string, opts InitOptions) InitConfig {
 type RegistryAuth struct {
 	Username string
 	Password string
-	// Anonymous pulls without credentials and ignores Username and Password.
-	// Explicit auth replaces the OS keyring, the registry configuration and
-	// Docker's credential store, so stale credentials stored there for a
-	// public registry no longer break the pull.
-	Anonymous bool
 }
 
 // ---------------------------------------------------------------------------
